@@ -77,7 +77,7 @@ class FeatureRemover(BaseEstimator, TransformerMixin): #Remove features with ire
 pipeline_preprosessing = Pipeline([
     ('feature_remover', FeatureRemover()), 
     ('imputer_race', SimpleImputer(strategy='constant', fill_value='other')),
-    ('imputer_medical', SimpleImputer(strategy='most_frequent'))
+    ('imputer_medical', SimpleImputer(strategy='most_frequent')
 ])
 
 # Fit and transform the DataFrame
@@ -102,6 +102,7 @@ print(training_clean_imputed.shape)
 X = training_clean_imputed.drop(columns=['readmitted'])
 #X = training_clean_imputed.iloc[:, [3,4,5,10,13,14,15]] # test with part of the features
 y = training_clean_imputed['readmitted']
+
 
 #New categorical list 
 # Ypdate the CATEGORICAL list by removing the removed_column_names
