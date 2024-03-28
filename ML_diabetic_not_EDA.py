@@ -1,7 +1,7 @@
 import os
 os.chdir('D:\yahel\phd\courses\ML in biology research\\final_project')
 
-from imblearn.over_sampling import SMOTE_C
+
 import numpy as np
 import pandas as pd
 import random
@@ -15,17 +15,21 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from imblearn.over_sampling import SMOTENC
+from imblearn.under_sampling import AllKNN
 
-
-from sklearn.model_selection import StratifiedGroupKFold , train_test_split
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import StratifiedGroupKFold , train_test_split, cross_val_score , StratifiedKFold
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder,OneHotEncoder
 from sklearn.impute import KNNImputer
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.linear_model import LogisticRegression
+
+from xgboost import XGBClassifier
 
 from Diabetic_readmission_essentials import categorize_dia, calculate_ratio
-from Diabetic_readmission_essentials import ColumnRemover, NumericalTransformer
+from Diabetic_readmission_essentials import ColumnRemover, NumericalTransformer ,SMOTENC_NS, CustomeLabelEncoder , CustomOHEncoder
 
 from IPython.display import display
-
 random.seed(42)
 
 # read database #
@@ -213,13 +217,22 @@ training_df_new['diag_3_cat'] = training_df_new['diag_3'].apply(categorize_dia)
 # removes ages 0-10 as there are little of them and no readmision rate
 training_df_new = training_df_new[~training_df_new['age'].isin(['[0-10)'])]
 
-################################
-#   upsampling using SMOTE-C   #
-################################
+# removes values with Trauma Center and Newborn in the admission as they have only few (5) records
+training_df_new = training_df_new[~training_df_new['admission_type_descriptor'].isin(['Trauma Center','Newborn'])]
 
-# numerical columns to be scaled for SMOTE-NC
-to_scale_cols = ['time_in_hospital','num_lab_procedures','num_procedures','num_medications',
-                 'number_outpatient','number_emergency','number_inpatient','number_diagnoses']
+
+##################################
+#   oversampling using SMOTE-C   #
+##################################
+
+# column to remove after EDA conclusions
+unecessery_columns = ['encounter_id', 'patient_nbr','weight','payer_code','diag_1','diag_2','diag_3',
+                       'chlorpropamide','tolbutamide','tolbutamide','repaglinide','acarbose','miglitol','troglitazone','acetohexamide','nateglinide',
+                       'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-rosiglitazone','metformin-pioglitazone',
+                       'admission_type_id','discharge_disposition_id','admission_source_id','max_glu_serum','A1Cresult','admission_source_descriptor']
+
+remover = ColumnRemover(columns_to_remove=unecessery_columns)
+omitted_df = remover.transform(training_df_new)
 
 nan_columns = training_df_new.groupby('readmitted').apply(lambda x: x.isna().sum())
 print('\n# --------------------------------------------------------- #\n# \
@@ -227,9 +240,60 @@ print('\n# --------------------------------------------------------- #\n# \
         \n# --------------------------------------------------------- #')
 display(nan_columns[['race','medical_specialty','max_glu_serum','A1Cresult','diag_1_cat','diag_2_cat','diag_3_cat']])
 
-# column to remove after EDA conclusions
-unecessery_columns = ['encounter_id', 'patient_nbr','weight','payer_code','diag_1','diag_2','diag_3',
-                       'chlorpropamide','tolbutamide','tolbutamide','repaglinide','acarbose','miglitol','troglitazone',
-                       'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-rosiglitazone','metformin-pioglitazone',
-                       'admission_type_id','discharge_disposition_id','admission_source_id','max_glu_serum','A1Cresult']
+# scale numerical values 
+to_scale_cols = ['time_in_hospital','num_lab_procedures','num_procedures','num_medications',
+                 'number_outpatient','number_emergency','number_inpatient','number_diagnoses']
 
+num_processing = NumericalTransformer(columns=to_scale_cols)
+
+print('\n\n Scaling numerical features \n\n')
+omitted_df = num_processing.fit_transform(omitted_df)
+
+
+# labels encode 
+print('\n\n Encode target labels \n\n')
+X , y= CustomeLabelEncoder(label_column='readmitted').fit_transform(omitted_df)
+
+# oversample with SMOT-NC
+print('\n# --------------------------------------------------------- #\n# \
+    Run oversampling with no size restrication using SMOT-NC #\
+        \n# --------------------------------------------------------- #')
+categorical_features_indices = [X.columns.get_loc(col) for col in X.select_dtypes(include=['category', 'object']).columns]
+
+# add sampling_strategy = {0: 12000, 1: 12000} to restrict oversampling number
+smote_os = SMOTENC_NS(categorical_features= categorical_features_indices,
+                       k_neighbors= 5, seed=42)
+
+X_resampled, y_resampled = smote_os.fit_resample(X,y)
+
+# one-hot encode features
+OHE_regular_cols = ['race','gender','age','medical_specialty','insulin','diabetesMed','admission_type_descriptor','discharge_disposition_descriptor']
+OHE_4_to_2_cols = ['metformin','glimepiride', 'glipizide', 'glyburide', 'pioglitazone','rosiglitazone']
+diagnoses_cols = ['diag_1_cat','diag_2_cat','diag_3_cat']
+
+print('\n\n One Hot Encode features \n\n')
+ohe = CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
+                       change_col='change', diag_cols=diagnoses_cols)
+
+
+X_ohe = ohe.fit_transform(X_resampled)
+X_ohe.columns = X_ohe.columns.str.replace('[','')
+
+# test numerous on defualt parameters with 10-fold CV to test best models
+print('\n# ------------------------------------------------------------------------- #\n# \
+   Test for numerous models on default parameters to chose best candidate models #\
+        \n# ------------------------------------------------------------------------- #')
+ 
+print('\n\n Run multinomial logistic regression \n CV score by average F1 measure\n\n')
+# run logistic regression with CV of 10 folds
+MLR = LogisticRegression(multi_class='multinomial', solver='lbfgs',max_iter=10000)
+
+cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+mlr_scores = cross_val_score(MLR, X_ohe, y_resampled, cv=cv, scoring='f1_macro', verbose=3) 
+print('CV score of 10 fold in logistic regression yeilds an avarge F1 averages score of %.2f' % mlr_scores.mean())
+
+# run XGboost in sklearn version
+xgb = XGBClassifier(use_label_encoder=False,)
+xgb_scores = cross_val_score(xgb, X_ohe, y_resampled, cv=cv, scoring='f1_macro', verbose=3) 
+
+print('CV score of 10 fold in XGBoost yeilds an avarge F1 averages score of %.2f' % xgb_scores.mean())
