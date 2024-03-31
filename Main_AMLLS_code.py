@@ -337,6 +337,12 @@ print(training_clean_imputed.head())
 print("DataFrame shape after feature selection and imputation:")
 print(training_clean_imputed.shape)
 
+#######################################
+# some colums are not removed after OHE like payer_code diag_1	diag_2	diag_3 repaglinide	
+# nateglinide	chlorpropamide tolbutamide acarbose	miglitol	troglitazone	tolazamide	glyburide-metformin	glipizide-metformin	glimepiride-pioglitazone	metformin-pioglitazone
+# admission_source_descriptor
+#######################################
+
 # run default models and compare with cross validation  
 X = training_clean_imputed.drop('readmitted',axis  = 1 )
 y = training_clean_imputed['readmitted']
