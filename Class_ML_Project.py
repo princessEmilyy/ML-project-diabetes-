@@ -301,6 +301,7 @@ class MultiModelCV(BaseEstimator, ClassifierMixin):
                 
         results = []
         for name, model in self.models.items():
+            print("\n_____________\n",name,"\n_____________\n")
             if name != 'Tree':
                 ovm = OneVsRestClassifier(model)
             else:
