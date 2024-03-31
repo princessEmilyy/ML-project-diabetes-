@@ -45,20 +45,17 @@ NUMERICAL = ['time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_me
 # Define irrelevant feature list
 IRRELEVANT_FEATURES = ["payer_code"]
 
+# Define columns for numeric scaling
+num_scale_cols = ['time_in_hospital','num_lab_procedures','num_procedures','num_medications',
+                 'number_outpatient','number_emergency','number_inpatient','number_diagnoses']
 
-# for OHE
-OHE_regular_cols = ['race', 'gender', 'age', 'medical_specialty', 'insulin', 'diabetesMed', 'admission_type_descriptor',
+# Define columns for OHE
+OHE_regular_cols = ['race', 'gender', 'medical_specialty', 'insulin', 'diabetesMed', 'admission_type_descriptor',
                     'discharge_disposition_descriptor']
 OHE_4_to_2_cols = ['metformin', 'glimepiride', 'glipizide', 'glyburide', 'pioglitazone', 'rosiglitazone']
 diagnoses_cols = ['diag_1_cat', 'diag_2_cat', 'diag_3_cat']
 
 # Note age feature will change to numerical later in the code!
-
-# Models with defualt parameters to test prior to tuning - Randomforest is embbeded in the MultiModelCV class
-models_defualt = {'Logisitic' : LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=10000),
-          'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42),
-          'Tree' : DecisionTreeClassifier(random_state=42),
-          'LGBM' : lgb.LGBMClassifier(random_state=42)}
 
 random.seed(42)
 
@@ -307,22 +304,19 @@ training_df_new = apply_mapping(db_train_df, id_names, mapping_dict)
 training_df_new = feature_engineering(training_df_new)
 
 # Define the pipeline
+
 pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover()),
-                     ('imputer_race', SimpleImputer(strategy='constant', fill_value='other')),
-                     ('imputer_medical', SimpleImputer(strategy='most_frequent'))
-                     ])
+                     ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other')),
+                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent')),
+                     ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=num_scale_cols)),
+                     ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
+                       change_col='change', diag_cols=diagnoses_cols))])  #
 
 # Fit and transform the DataFrame
 training_clean_imputed = pipeline.fit_transform(training_df_new)
 
 # Get the removed column names
 removed_column_names = pipeline.named_steps['feature_remover'].features_to_remove
-
-# Get the original column names before transformation
-original_column_names = [col for col in training_df_new.columns if col not in removed_column_names]
-
-# Convert the NumPy array to a DataFrame
-training_clean_imputed = pd.DataFrame(training_clean_imputed, columns=original_column_names)
 
 # Finally print the results
 print("DataFrame head after feature selection and imputation:")

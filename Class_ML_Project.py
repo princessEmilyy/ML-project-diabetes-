@@ -59,6 +59,30 @@ class FeatureRemover(BaseEstimator, TransformerMixin):
 
 
 
+class DataFrameImputer(BaseEstimator, TransformerMixin):
+    """
+    A wrapper for SimpleImputer that returns a pandas DataFrame
+    required for our custome OHE.
+    """
+    def __init__(self, strategy='mean', fill_value=None):
+        self.strategy = strategy
+        self.fill_value = fill_value
+        self.imputer = None
+
+    def fit(self, X, y=None):
+        self.imputer = SimpleImputer(strategy=self.strategy, fill_value=self.fill_value)
+        self.imputer.fit(X)
+        return self
+
+    def transform(self, X):
+        # Apply imputation
+        result = self.imputer.transform(X)
+        # Convert back to DataFrame, preserving original column names and index
+        result_df = pd.DataFrame(result, columns=X.columns, index=X.index)
+        return result_df
+
+
+
 class NumericalTransformer(BaseEstimator, TransformerMixin):
     # a class for numerical scaling
     # optional log2 for chosen features by name
@@ -78,7 +102,10 @@ class NumericalTransformer(BaseEstimator, TransformerMixin):
             scaler = MinMaxScaler()
             if col == self.log_column:
                 # Log-transform then fit scaler
-                self.scalers[col] = scaler.fit(np.log2(X[[col]] + 1))
+                # Convert to numpy array for numpy log function
+                data = X[col].values.reshape(-1, 1).astype(float)
+                data = np.log2(data + 1)
+                self.scalers[col] = scaler.fit(data)
             else:
                 # Fit scaler directly
                 self.scalers[col] = scaler.fit(X[[col]])
@@ -88,11 +115,11 @@ class NumericalTransformer(BaseEstimator, TransformerMixin):
         X_transformed = X.copy()
         for col in self.columns:
             if col == self.log_column:
-                # Log-transform then scale
-                X_transformed[col] = self.scalers[col].transform(np.log2(X_transformed[[col]] + 1))
+                data = X[col].values.reshape(-1, 1).astype(float)
+                data = np.log2(data + 1) 
+                X_transformed[col] = self.scalers[col].transform(data)
             else:
-                # Scale directly
-                X_transformed[col] = self.scalers[col].transform(X_transformed[[col]])
+                X_transformed[col] = self.scalers[col].transform(X[[col]])
         return X_transformed
 
 
@@ -168,7 +195,10 @@ class CustomOHEncoder(BaseEstimator, TransformerMixin):
         self.unique_diagnoses = None
 
     def fit(self, X, y=None):
+        
         # Fit the regular OHE encoder
+        
+        
         if self.OHE_regular_cols:
             self.ohe.fit(X[self.OHE_regular_cols])
         
@@ -178,6 +208,55 @@ class CustomOHEncoder(BaseEstimator, TransformerMixin):
             self.unique_diagnoses = melted_disease['value'].unique()
         
         return self
+
+    def transform(self, X):
+        result = X.copy()
+        
+        # Apply regular OHE
+        if self.OHE_regular_cols:
+            transformed = self.ohe.transform(result[self.OHE_regular_cols]).toarray()
+            result = result.drop(columns=self.OHE_regular_cols)
+            result = result.join(pd.DataFrame(transformed, columns=self.ohe.get_feature_names_out(), index=result.index))
+        
+        # Apply 4-to-2 encoding - for medication
+        if self.OHE_4_to_2_cols:
+            result[self.OHE_4_to_2_cols] = result[self.OHE_4_to_2_cols].replace({'No': 0, 'Steady': 0, 'Up': 1, 'Down': 1})
+        
+        # Apply "change" transformation 
+        #based on medication swap and not dosage change
+        
+        if self.change_col and self.OHE_4_to_2_cols:
+            # checks if dosage was not chamges among medication exisitng in dataset
+            dosage_changed_bool = result[self.OHE_4_to_2_cols].apply(lambda x: sum(x > 0) == 0, axis=1)
+            
+            # iterate to over all records ,mark 1 where doasge was not changed but medication was
+            new_change = [(1 if i and ch == 'Ch' else 0) for i, ch in zip(dosage_changed_bool, result[self.change_col])]
+            result[self.change_col] = new_change
+        
+        # Apply disease diagnosis encoding
+        if self.diag_cols and self.unique_diagnoses is not None:
+            # prepare a zero matrix to count for dieases per patient
+            ohe_diagnosis = pd.DataFrame(np.zeros((result.shape[0], len(self.unique_diagnoses))),
+                                         columns=self.unique_diagnoses, index=result.index)
+            #get disease diagnosis per record 
+            record_disease = result[self.diag_cols].apply(lambda x: x.value_counts().index.values, axis=1)
+            
+            # iterate over pateint diagnosis and add one to ohe_diagnosis in the relevant place
+            for row, diag in enumerate(record_disease):
+                for dis in diag:
+                    if dis in ohe_diagnosis.columns:
+                        ohe_diagnosis.loc[row, dis] = 1
+            
+            # drop Diabetes since they all have it
+            ohe_diagnosis.drop(['Diabetes'], axis=1, inplace=True, errors='ignore')
+            ohe_diagnosis = ohe_diagnosis.iloc[:, :-1]  # Drop last column for None diagnosis
+            
+            # remove input columns
+            result = result.drop(columns=self.diag_cols)
+            # add the untouched columns
+            result = result.join(ohe_diagnosis)
+        
+        return result
 
 
 
