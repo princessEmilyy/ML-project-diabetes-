@@ -5,6 +5,7 @@ Combined code for AMLLS project
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.datasets import make_classification
 from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -13,10 +14,15 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_graphviz
-from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , train_test_split, StratifiedKFold
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, make_scorer
 from sklearn.impute import KNNImputer
+from sklearn.multiclass import OneVsRestClassifier
 import random
+import lightgbm as lgb
+from xgboost import XGBClassifier
+from imblearn.ensemble import BalancedRandomForestClassifier
+
 # import string
 # import pickle
 # import copy
@@ -57,6 +63,12 @@ diagnoses_cols = ['diag_1_cat', 'diag_2_cat', 'diag_3_cat']
 
 # Note age feature will change to numerical later in the code!
 
+
+# Define default models to initail test
+models_defualt = {'Logisitic' : LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=10000),
+          'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42),
+          'Tree' : DecisionTreeClassifier(random_state=42),
+          'LGBM' : lgb.LGBMClassifier(random_state=42)}
 random.seed(42)
 
 
@@ -318,12 +330,16 @@ training_clean_imputed = pipeline.fit_transform(training_df_new)
 # Get the removed column names
 removed_column_names = pipeline.named_steps['feature_remover'].features_to_remove
 
+
 # Finally print the results
 print("DataFrame head after feature selection and imputation:")
 print(training_clean_imputed.head())
 print("DataFrame shape after feature selection and imputation:")
 print(training_clean_imputed.shape)
 
-# multi_model_cv = MultiModelCV(models=models_defualt, score='average_precision',balance_threshold = 0.2)
-# multi_model_cv.fit(X_ohe, y_resampled)
-# display(multi_model_cv.get_results())
+# run default models and compare with cross validation  
+X = training_clean_imputed.drop('readmitted',axis  = 1 )
+y = training_clean_imputed['readmitted']
+multi_model_cv = Class_ML_Project.MultiModelCV(models=models_defualt, score='average_precision',balance_threshold = 0.2)
+multi_model_cv.fit(X, y)
+display(multi_model_cv.get_results())
