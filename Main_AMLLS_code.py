@@ -22,6 +22,7 @@ import random
 import lightgbm as lgb
 from xgboost import XGBClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier
+from sklearn import svm
 
 # import string
 # import pickle
@@ -36,7 +37,7 @@ import Class_ML_Project
 # Global variables
 # Define categorical feature list
 # Subset all categorical (removing the non informative medication)
-CATEGORICAL = ['race', 'gender', 'age', 'medical_specialty', 'max_glu_serum',
+CATEGORICAL = ['race', 'gender', 'medical_specialty', 'max_glu_serum',
                'A1Cresult', 'metformin', 'repaglinide', 'nateglinide', 'chlorpropamide', 'glimepiride',
                'acetohexamide', 'glipizide', 'glyburide', 'tolbutamide', 'pioglitazone', 'rosiglitazone', 'acarbose',
                'miglitol', 'troglitazone', 'tolazamide', 'insulin', 'glyburide-metformin', 'glipizide-metformin',
@@ -46,14 +47,14 @@ CATEGORICAL = ['race', 'gender', 'age', 'medical_specialty', 'max_glu_serum',
 
 # Define numerical feature list
 NUMERICAL = ['time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_medications',
-             'number_diagnoses', 'number_outpatient', 'number_emergency', 'number_inpatient']
+             'number_diagnoses', 'number_outpatient', 'number_emergency', 'number_inpatient','age']
 
 # Define irrelevant feature list
-IRRELEVANT_FEATURES = ["payer_code"]
+IRRELEVANT_FEATURES = ["payer_code",'diag_1','diag_2','diag_3','repaglinide',	
+ 'nateglinide','chlorpropamide','tolbutamide','acarbose','miglitol','troglitazone',
+ 'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-pioglitazone',
+ 'admission_source_descriptor','admission_type_id','discharge_disposition_id','admission_source_id','patient_nbr']
 
-# Define columns for numeric scaling
-num_scale_cols = ['time_in_hospital','num_lab_procedures','num_procedures','num_medications',
-                 'number_outpatient','number_emergency','number_inpatient','number_diagnoses']
 
 # Define columns for OHE
 OHE_regular_cols = ['race', 'gender', 'medical_specialty', 'insulin', 'diabetesMed', 'admission_type_descriptor',
@@ -66,9 +67,10 @@ diagnoses_cols = ['diag_1_cat', 'diag_2_cat', 'diag_3_cat']
 
 # Define default models to initail test
 models_defualt = {'Logisitic' : LogisticRegression(multi_class='multinomial', solver='lbfgs', max_iter=10000),
-          'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42),
+          'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42, enable_categorical = True),
           'Tree' : DecisionTreeClassifier(random_state=42),
-          'LGBM' : lgb.LGBMClassifier(random_state=42)}
+          'LGBM' : lgb.LGBMClassifier(random_state=42),
+          'SVM': svm.SVC(kernel='linear',random_state=42)}
 random.seed(42)
 
 
@@ -79,7 +81,7 @@ def read_and_clean_data_(file_name: str):
     :return: a clean data base
     """
     # read database
-    whole_data_df = pd.read_csv(file_name)
+    whole_data_df = pd.read_csv(file_name, index_col= 'encounter_id')
     print(whole_data_df.head())
 
     # Find for each feature the value it has
@@ -298,7 +300,7 @@ def feature_engineering(in_df: pd.DataFrame):
     in_df['age'] = in_df['age'].apply(Functions_ML_Project.extract_age_range_and_average)
 
     # Convert the age column to numeric
-    in_df['age'] = pd.to_numeric(in_df['age'])
+    in_df['age'] = in_df['age'].astype('int8')
 
     return in_df
 
@@ -315,12 +317,14 @@ training_df_new = apply_mapping(db_train_df, id_names, mapping_dict)
 #
 training_df_new = feature_engineering(training_df_new)
 
+
+
 # Define the pipeline
 
-pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover()),
+pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES)),
                      ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other')),
                      ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent')),
-                     ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=num_scale_cols)),
+                     ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=NUMERICAL)),
                      ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
                        change_col='change', diag_cols=diagnoses_cols))])  #
 
@@ -346,6 +350,7 @@ print(training_clean_imputed.shape)
 # run default models and compare with cross validation  
 X = training_clean_imputed.drop('readmitted',axis  = 1 )
 y = training_clean_imputed['readmitted']
+y = LabelEncoder().fit_transform(y)
 multi_model_cv = Class_ML_Project.MultiModelCV(models=models_defualt, score='average_precision',balance_threshold = 0.2)
 multi_model_cv.fit(X, y)
-display(multi_model_cv.get_results())
+print(multi_model_cv.get_results())

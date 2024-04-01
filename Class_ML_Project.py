@@ -38,8 +38,9 @@ class FeatureRemover(BaseEstimator, TransformerMixin):
     2. >50%  missing values
     3. Low variance in the feature cannot contribute to the model
     """
-    def __init__(self):
-        self.features_to_remove = []
+    def __init__(self, features_to_remove):
+        
+        self.features_to_remove = features_to_remove
     
     def fit(self, X, y=None):
         # Remove features with >50%  missing values
