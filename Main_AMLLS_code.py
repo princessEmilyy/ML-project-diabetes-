@@ -23,6 +23,7 @@ import lightgbm as lgb
 from xgboost import XGBClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier
 from sklearn import svm
+from catboost import CatBoostClassifier
 
 # import string
 # import pickle
@@ -37,7 +38,7 @@ import Class_ML_Project
 # Global variables
 # Define categorical feature list
 # Subset all categorical (removing the non informative medication)
-CATEGORICAL = ['race', 'gender', 'medical_specialty', 'max_glu_serum',
+CATEGORICAL = ['age','race', 'gender', 'medical_specialty', 'max_glu_serum',
                'A1Cresult', 'metformin', 'repaglinide', 'nateglinide', 'chlorpropamide', 'glimepiride',
                'acetohexamide', 'glipizide', 'glyburide', 'tolbutamide', 'pioglitazone', 'rosiglitazone', 'acarbose',
                'miglitol', 'troglitazone', 'tolazamide', 'insulin', 'glyburide-metformin', 'glipizide-metformin',
@@ -47,7 +48,7 @@ CATEGORICAL = ['race', 'gender', 'medical_specialty', 'max_glu_serum',
 
 # Define numerical feature list
 NUMERICAL = ['time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_medications',
-             'number_diagnoses', 'number_outpatient', 'number_emergency', 'number_inpatient','age']
+             'number_diagnoses', 'number_outpatient', 'number_emergency', 'number_inpatient']
 
 # Define irrelevant feature list
 IRRELEVANT_FEATURES = ["payer_code",'diag_1','diag_2','diag_3','repaglinide',	
@@ -70,7 +71,8 @@ models_defualt = {'Logisitic' : LogisticRegression(multi_class='multinomial', so
           'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42, enable_categorical = True),
           'Tree' : DecisionTreeClassifier(random_state=42),
           'LGBM' : lgb.LGBMClassifier(random_state=42),
-          'SVM': svm.SVC(kernel='linear',random_state=42)}
+          'SVM': svm.SVC(kernel='linear',random_state=42),
+          'CatBoost' : CatBoostClassifier(random_score_type=42)}
 random.seed(42)
 
 
@@ -288,19 +290,11 @@ def feature_engineering(in_df: pd.DataFrame):
     in_df = in_df[~in_df['admission_type_descriptor'].isin(['Trauma Center', 'Newborn'])]
 
     """ 
-        We hypotehsize that the model might benefit from converting age from categorical feature 
-        with ranges into a numerical featue. The way we do it is by averaging the value of the lower and upper
-        age. For example: [60-70) becomes 65 years old. This is because there is a an ordinal and 
-        directional meaning to ages (as opposed to race or gender). Another assumption we make is that the 
-        averaged age is a good apporximation biologically, the difference between 60 to 70 is probably 
-        not so dramatic so by avaraging we still represent the reallity.
+        We hypotehsize that the model might benefit from converting age from categorical feature
+        with ranges into a an ordinal feature. This is because there is a an ordinal and
+        directional meaning to ages (as opposed to race or gender). Therefore we use LabelEncoder
+
     """
-
-    # Convert the age column to numeric
-    in_df['age'] = in_df['age'].apply(Functions_ML_Project.extract_age_range_and_average)
-
-    # Convert the age column to numeric
-    in_df['age'] = in_df['age'].astype('int8')
 
     return in_df
 
@@ -322,6 +316,7 @@ training_df_new = feature_engineering(training_df_new)
 # Define the pipeline
 
 pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES)),
+                     ('age_encoder', ColumnTransformer([('age',LabelEncoder(),['age'])],remainder='passthrough')),
                      ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other')),
                      ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent')),
                      ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=NUMERICAL)),

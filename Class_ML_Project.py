@@ -102,7 +102,7 @@ class NumericalTransformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y=None):
         # Fit scaler to each specified column individually
         for col in self.columns:
-            scaler = MinMaxScaler()
+            scaler = StandardScaler()
             if col == self.log_column:
                 # Log-transform then fit scaler
                 # Convert to numpy array for numpy log function
