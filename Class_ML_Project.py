@@ -261,7 +261,43 @@ class CustomOHEncoder(BaseEstimator, TransformerMixin):
         
         return result
 
+class MultiColumnLabelEncoder(BaseEstimator, TransformerMixin):
+    def __init__(self, columns=None):
+        # List of column names to encode
+        self.columns = columns
 
+    def fit(self, X, y=None):
+        # Create a dictionary to store label encoders for each column
+        self.encoders = {}
+        if self.columns is not None:
+            for col in self.columns:
+                le = LabelEncoder()
+                le.fit(X[col].astype('category'))  # Fit a label encoder
+                self.encoders[col] = le
+        return self
+
+    def transform(self, X):
+        """
+        Transform columns of X specified in self.columns using LabelEncoder().
+        Non-specified columns are passed without modification.
+        """
+        if self.columns is not None:
+            for col in self.columns:
+                encoder = self.encoders[col]
+                X[col] = pd.Series(encoder.transform(X[col].astype('category')), index=X.index).astype('category')
+
+        return X
+
+    def inverse_transform(self, X):
+        """
+        Inverse transform columns of X specified in self.columns using the inverse_transform method of LabelEncoder.
+        """
+        X = X.copy()
+        if self.columns is not None:
+            for col in self.columns:
+                encoder = self.encoders[col]
+                X[col] = encoder.inverse_transform(X[col])  # Inverse transform the data
+        return X
 
 class MultiModelCV(BaseEstimator, ClassifierMixin):
     def __init__(self, models, folds=5, balance_threshold=0.2, score=None):
@@ -293,11 +329,11 @@ class MultiModelCV(BaseEstimator, ClassifierMixin):
         self.models[rf_model_name] = rf_model
 
         # Scorer
-        if isinstance(self.score, str):
-            scoring = self.score
+        if callable(self.score):
+            scoring = make_scorer(self.score, needs_proba=True)
         else:
-            scoring = make_scorer(self.score)
-        
+            scoring = self.score
+            
         cv = StratifiedKFold(n_splits=self.folds, shuffle=True, random_state=42)
                 
         results = []
