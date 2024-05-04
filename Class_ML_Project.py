@@ -67,21 +67,34 @@ class DataFrameImputer(BaseEstimator, TransformerMixin):
     A wrapper for SimpleImputer that returns a pandas DataFrame
     required for our custome OHE.
     """
-    def __init__(self, strategy='mean', fill_value=None):
+    def __init__(self, strategy='mean', fill_value=None, columns=None):
         self.strategy = strategy
         self.fill_value = fill_value
+        self.columns = columns
         self.imputer = None
 
     def fit(self, X, y=None):
-        self.imputer = SimpleImputer(strategy=self.strategy, fill_value=self.fill_value)
-        self.imputer.fit(X)
+        if self.columns is not None:
+            # Impute only specified columns
+            self.imputer = SimpleImputer(strategy=self.strategy, fill_value=self.fill_value)
+            self.imputer.fit(X[self.columns])
+        else:
+            # Impute all columns
+            self.imputer = SimpleImputer(strategy=self.strategy, fill_value=self.fill_value)
+            self.imputer.fit(X)
         return self
 
     def transform(self, X):
         # Apply imputation
-        result = self.imputer.transform(X)
-        # Convert back to DataFrame, preserving original column names and index
-        result_df = pd.DataFrame(result, columns=X.columns, index=X.index)
+        if self.columns is not None:
+            # Impute only specified columns
+            X_transformed = X.copy()
+            X_transformed[self.columns] = self.imputer.transform(X[self.columns])
+            result_df = X_transformed
+        else:
+            # Apply imputation to all columns
+            result = self.imputer.transform(X)
+            result_df = pd.DataFrame(result, columns=X.columns, index=X.index)
         return result_df
 
 

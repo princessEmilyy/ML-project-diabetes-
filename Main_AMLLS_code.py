@@ -75,7 +75,7 @@ models_defualt = {'Logisitic' : LogisticRegression(multi_class='multinomial', so
           'XGBOOST' : XGBClassifier(use_label_encoder=False,random_state = 42, enable_categorical = True),
           'Tree' : DecisionTreeClassifier(random_state=42),
           'LGBM' : lgb.LGBMClassifier(random_state=42),
-          'CatBoost' : CatBoostClassifier(random_seed = 42),
+          'CatBoost' : CatBoostClassifier(random_seed = 42 , cat_features = ['age']),
                  'SVM': svm.SVC(kernel='linear',random_state=42, probability=True)}
 random.seed(42)
 
@@ -94,12 +94,10 @@ training_df_new = Functions_ML_Project.feature_engineering(training_df_new)
 
 #age_col = training_df_new.get_loc('age')
 
-
 # Define the pipeline
-
 pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES)),
-                     ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other')),
-                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent')),
+                     ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other', columns = ['race'])),
+                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
                      ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
                      ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=NUMERICAL)),
                      ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
@@ -118,10 +116,9 @@ print(training_clean_imputed.head())
 print("DataFrame shape after feature selection and imputation:")
 print(training_clean_imputed.shape)
 
-
 # run default models and compare with cross validation  
 X = training_clean_imputed.drop('readmitted',axis  = 1 )
-X.drop('age', axis = 1,inplace = True)
+
 y = training_clean_imputed['readmitted']
 y = LabelEncoder().fit_transform(y)
 multi_model_cv = Class_ML_Project.MultiModelCV(models=models_defualt,
@@ -131,5 +128,30 @@ multi_model_cv.fit(X, y)
 defualt_models_original_dataframe = multi_model_cv.get_results()
 print(defualt_models_original_dataframe)
 
-defualt_models_original_dataframe.to_csv('defualt_models_original_dataframe.csv', index=False)
+#defualt_models_original_dataframe.to_csv('defualt_models_original_dataframe.csv', index=False)
 
+# --------------------------------------------------------------- #
+# run pipeline and defualt models on oversampled data by SMOTE-NC #
+# --------------------------------------------------------------- #
+
+post_smote_traning_dataset = pd.read_csv('post_smote_traning_dataset.csv',index_col= 0)
+
+pipeline_smote = Pipeline([('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other', columns = ['race'])),
+                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
+                     ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
+                     ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
+                       change_col='change', diag_cols=diagnoses_cols))])
+
+training_clean_smote_imputed = pipeline_smote.fit_transform(post_smote_traning_dataset)
+
+# run default models and compare with cross validation  
+X_smote = training_clean_smote_imputed.drop('readmitted',axis  = 1 )
+
+y_smote = training_clean_smote_imputed['readmitted']
+y_smote = LabelEncoder().fit_transform(y_smote)
+
+multi_model_cv.fit(X_smote, y_smote)
+defualt_models_smote_dataframe = multi_model_cv.get_results()
+print(defualt_models_smote_dataframe)
+
+#defualt_models_smote_dataframe.to_csv('defualt_models_smote_dataframe.csv', index=False)
