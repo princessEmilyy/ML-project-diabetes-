@@ -15,7 +15,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, L
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_graphviz
 from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , train_test_split, StratifiedKFold
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, make_scorer
+from sklearn.metrics import confusion_matrix, make_scorer, balanced_accuracy_score
 from sklearn.impute import KNNImputer
 from sklearn.multiclass import OneVsRestClassifier
 import random
@@ -55,8 +55,7 @@ NUMERICAL = ['time_in_hospital', 'num_lab_procedures', 'num_procedures', 'num_me
              'number_diagnoses', 'number_outpatient', 'number_emergency', 'number_inpatient']
 
 # Define irrelevant feature list
-IRRELEVANT_FEATURES = ["payer_code",'diag_1','diag_2','diag_3','repaglinide',	
- 'nateglinide','chlorpropamide','tolbutamide','acarbose','miglitol','troglitazone',
+IRRELEVANT_FEATURES = ["payer_code",'diag_1','diag_2','diag_3','repaglinide','nateglinide','chlorpropamide','tolbutamide','acarbose','miglitol','troglitazone',
  'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-pioglitazone',
  'admission_source_descriptor','admission_type_id','discharge_disposition_id','admission_source_id','patient_nbr']
 
@@ -92,9 +91,8 @@ training_df_new = Functions_ML_Project.apply_mapping(db_train_df, id_names, mapp
 #
 training_df_new = Functions_ML_Project.feature_engineering(training_df_new)
 
-#age_col = training_df_new.get_loc('age')
-
 # Define the pipeline
+
 pipeline = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES)),
                      ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other', columns = ['race'])),
                      ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
@@ -116,19 +114,25 @@ print(training_clean_imputed.head())
 print("DataFrame shape after feature selection and imputation:")
 print(training_clean_imputed.shape)
 
+
+
+# remove readmitted above 30 days 
+training_clean_imputed = training_clean_imputed[training_clean_imputed.readmitted.isin(['<30', 'NO'])]
+
 # run default models and compare with cross validation  
 X = training_clean_imputed.drop('readmitted',axis  = 1 )
 
 y = training_clean_imputed['readmitted']
 y = LabelEncoder().fit_transform(y)
 multi_model_cv = Class_ML_Project.MultiModelCV(models=models_defualt,
-                                               score=Functions_ML_Project.average_precision_score,
+                                               score=balanced_accuracy_score,
                                                balance_threshold = 0.3)
 multi_model_cv.fit(X, y)
 defualt_models_original_dataframe = multi_model_cv.get_results()
 print(defualt_models_original_dataframe)
 
-#defualt_models_original_dataframe.to_csv('defualt_models_original_dataframe.csv', index=False)
+#defualt_models_original_dataframe.to_csv('default_models_original_dataframe.csv', index=False)
+
 
 # --------------------------------------------------------------- #
 # run pipeline and defualt models on oversampled data by SMOTE-NC #
@@ -154,4 +158,41 @@ multi_model_cv.fit(X_smote, y_smote)
 defualt_models_smote_dataframe = multi_model_cv.get_results()
 print(defualt_models_smote_dataframe)
 
-#defualt_models_smote_dataframe.to_csv('defualt_models_smote_dataframe.csv', index=False)
+#defualt_models_smote_dataframe.to_csv('default_models_smote_dataframe.csv', index=False)
+
+# --------------------------------------------------------------- #
+#   run pipeline and defualt models on oversampled data by GANs   #
+# --------------------------------------------------------------- #
+
+# --------------------------------- #
+#                CTGAN              #
+# --------------------------------- #
+
+
+IRRELEVANT_FEATURES_for_GAN = ['repaglinide','nateglinide','chlorpropamide','tolbutamide','acarbose','miglitol','troglitazone',
+ 'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-pioglitazone',
+ 'admission_source_descriptor']
+
+pipeline_CTGAN = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES_for_GAN)),
+                     ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='Other', columns = ['race'])),
+                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
+                     ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
+                     ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=NUMERICAL)),
+                     ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
+                       change_col='change', diag_cols=diagnoses_cols))])
+
+id_fold = pd.read_csv('id_fold.csv')
+
+GAN_synthesized_data = [f for f in os.listdir() if 'CTGAN' in f and os.path.isfile(os.path.join(f))]
+
+results_GAN_df = pd.DataFrame()
+for fold,syn_data in enumerate(GAN_synthesized_data):
+    GAN_train_fold, GAN_test_fold = Functions_ML_Project.GAN_data_preprocessing(syn_data,
+                                                                                 training_clean_imputed, IRRELEVANT_FEATURES_for_GAN,
+                                                                                 id_fold,OHE_regular_cols,fold+1,'max',pipeline_CTGAN)
+    
+    model_results = Functions_ML_Project.run_models_with_GAN(GAN_train_fold, GAN_test_fold, models = models_defualt)
+    temp_df = pd.DataFrame([model_results])
+    results_GAN_df = pd.concat([results_GAN_df, temp_df], ignore_index=True)
+    
+#results_GAN_df.to_csv('default_models_CTGAN_dataframe.csv', index=False)

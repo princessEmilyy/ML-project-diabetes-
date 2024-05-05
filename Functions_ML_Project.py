@@ -15,7 +15,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, L
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_graphviz
 from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, average_precision_score, make_scorer
+from sklearn.metrics import balanced_accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, average_precision_score, make_scorer
 from sklearn.impute import KNNImputer
 import random
 import string
@@ -212,6 +212,7 @@ def apply_mapping(in_db: pd.DataFrame, name_id: list, mapping: dict):
     :return: modify DF
     """
     # Replace the values in the training df with the values in the dictionary
+    index_save = in_db.index
     df_new = in_db.copy()
     df_new[name_id] = df_new[name_id].astype('str')
 
@@ -229,6 +230,7 @@ def apply_mapping(in_db: pd.DataFrame, name_id: list, mapping: dict):
     rename_dict = dict(zip(df_new.columns[-3:], new_column_names))
     df_new = df_new.rename(columns=rename_dict)
     print(df_new.iloc[:, -3:])
+    df_new.index = index_save
     return df_new
 
 
@@ -327,4 +329,93 @@ def extract_age_range_and_average(age_range):
     lower, upper = map(int, age_range.strip('[]()').split('-'))
     return (lower + upper) / 2
     
+# define a function that removes OHE sparse data
+def remove_sparse_OHE(df_:pd.DataFrame, regex_colnames:list):
+    sparse_OHE_cols = []
+    for reg in regex_colnames:
+        tmp_df = df_.filter(regex = reg)
+        sparse_OHE_cols += tmp_df.columns[tmp_df.sum(axis = 0) / len(tmp_df) < 0.01].tolist()
+    print('removed %i sparse OHE columns' % len(sparse_OHE_cols))
+    df_.drop(sparse_OHE_cols, axis =1, inplace = True)
+    return df_
 
+# function to process GAN synthezied data and combine to real data 
+def GAN_data_preprocessing(GAN_path:str, original_data:pd.DataFrame,filtration_col:list,
+                          ID_df:pd.DataFrame,OHE_cols:list,num_fold:int,oversample,pre_pipeline):
+    """
+    GAN_path - a path to read the GAN synethisized data from
+    original_data - training dataset which the GAN was run on
+    filtration_col - the non relevant columns for the matrix to be removed
+    OHE_cols - OHE columns to check for sparsity and than remove
+    ID_df - dataframe to map the original ids for folds
+    oversample - either "max" or a float to state the oversampling ratio (if max than raises the num of samples to be equal)
+    pre_pipeline - preprceossing pipeline to run the new synethisized data through before combining with the fold data
+    num_fold -which fold number to oversample datafrom
+    """
+    
+    current_synthesized_df = pd.read_csv(GAN_path, index_col=0)
+    
+    current_synthesized_df_imputed = pre_pipeline.fit_transform(current_synthesized_df)
+    current_synthesized_df_imputed = remove_sparse_OHE(current_synthesized_df_imputed,OHE_cols)
+
+    # remove columns that were not existing in original data 
+    missing_columns_from_original = current_synthesized_df_imputed.columns[~current_synthesized_df_imputed.columns.isin(original_data.columns)]
+    current_synthesized_df_imputed.drop(missing_columns_from_original, axis = 1, inplace = True)
+
+    # add columns that were not exisiting in GAN data only with 0 values
+    missing_columns_GAN_df = pd.DataFrame(0,index = np.arange(current_synthesized_df_imputed.shape[0]), columns = original_data.columns[~original_data.columns.isin(current_synthesized_df_imputed.columns)])
+    current_synthesized_df_imputed = pd.concat([current_synthesized_df_imputed.reset_index(drop = True),missing_columns_GAN_df],axis = 1)
+
+    # read Id mapping for folds
+    ID_df = ID_df[ID_df.fold_num == num_fold]
+
+    # subset the training/testing fold
+    subset_train = original_data[original_data.index.isin(ID_df.encounter_id[ID_df.Train_Val == 'Train'])]
+    subset_test = original_data[original_data.index.isin(ID_df.encounter_id[ID_df.Train_Val == 'Val'])]
+
+    # encod label for subsets
+    subset_train.readmitted = LabelEncoder().fit_transform(subset_train.readmitted)
+    subset_test.readmitted = LabelEncoder().fit_transform(subset_test.readmitted)
+
+    # set sample size to oversample
+    if oversample == 'max':
+        n_OE = subset_train.readmitted.value_counts()[1] - subset_train.readmitted.value_counts()[0]
+    elif isinstance(oversample, float):
+        n_OE = round((subset_train.readmitted.value_counts()[1] - subset_train.readmitted.value_counts()[0]) * oversample)
+
+    # oversample with GAN
+    sampled_df = current_synthesized_df_imputed.sample(n=n_OE, random_state=42)
+    subset_train = pd.concat([subset_train, sampled_df],axis = 0)
+    
+    return subset_train,subset_test
+
+# run models on all folds of GAN
+def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
+                         models:dict,balance_threshold:float =0.3):
+
+    X_train = train_df.drop('readmitted' , axis = 1)
+    y_train = train_df['readmitted']
+
+    X_test = test_df.drop('readmitted' , axis = 1)
+    y_test = test_df['readmitted']
+
+    _, counts = np.unique(y, return_counts=True)
+    ratios = counts / np.max(counts)
+    is_balanced = sum(ratios > balance_threshold) == len(counts)
+
+    # Dynamically select and add RandomForestClassifier based on balance
+    rf_model_name = 'BalancedRandomForestClassifier' if not is_balanced else 'RandomForestClassifier'
+    rf_model = BalancedRandomForestClassifier(random_state=42) if not is_balanced else RandomForestClassifier(random_state=42)
+    models[rf_model_name] = rf_model
+
+    results = {}
+    for name, model in models_defualt.items():
+        print("\n_____________\n",name,"\n_____________\n")
+        model.fit(X_train,y_train)
+        y_pred = model.predict(X_test)
+        tmp_score = balanced_accuracy_score(y_test,y_pred)
+        print('\n Score.................................. = %.3f\n' % tmp_score)
+        results[name] = tmp_score
+    return results
+
+run_models_with_GAN(GAN_train_fold, GAN_test_fold, models = models_defualt)
