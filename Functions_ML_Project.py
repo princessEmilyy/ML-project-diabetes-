@@ -33,6 +33,8 @@ from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 
 
+import Class_ML_Project
+
 ######################################### Functions  ########################################
 
 def read_and_clean_data_(file_name: str):
@@ -398,8 +400,8 @@ def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
 
     X_test = test_df.drop('readmitted' , axis = 1)
     y_test = test_df['readmitted']
-
-    _, counts = np.unique(y, return_counts=True)
+    
+    _, counts = np.unique(y_train, return_counts=True)
     ratios = counts / np.max(counts)
     is_balanced = sum(ratios > balance_threshold) == len(counts)
 
@@ -409,7 +411,7 @@ def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
     models[rf_model_name] = rf_model
 
     results = {}
-    for name, model in models_defualt.items():
+    for name, model in models.items():
         print("\n_____________\n",name,"\n_____________\n")
         model.fit(X_train,y_train)
         y_pred = model.predict(X_test)
@@ -418,4 +420,70 @@ def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
         results[name] = tmp_score
     return results
 
-run_models_with_GAN(GAN_train_fold, GAN_test_fold, models = models_defualt)
+
+# funcitons that runs a preprocess SMOTE oversampling based on Folds give by a dataframe
+def SMOTE_data_preprocessing(original_data:pd.DataFrame,filtration_col:list,
+                          ID_df_:pd.DataFrame,OHE_regular_cols:list,
+                             num_fold:int,pre_pipeline, post_pipeline):
+    """
+    original_data - training dataset which the GAN was run on
+    filtration_col - the non relevant columns for the matrix to be removed
+
+    ID_df - dataframe to map the original ids for folds
+    pre_pipeline - preprceossing pipeline to run  data through before SMOTE-NC
+    post_pipeline - preprceossing pipeline to run the new synethisized data through after oversampling
+    OHE_regular_cols - list of OHE regular columns to check for sparsity
+    num_fold -which fold number to oversample datafrom
+    """
+    
+    original_data = pre_pipeline.fit_transform(original_data)
+
+    
+    # Oversample with SMOTE-NC #
+    ID_df = ID_df_
+    ID_df = ID_df[ID_df.fold_num == num_fold]
+
+    # subset the training/testing fold
+    subset_train = original_data[original_data.index.isin(ID_df.encounter_id[ID_df.Train_Val == 'Train'])]
+    subset_test = original_data[original_data.index.isin(ID_df.encounter_id[ID_df.Train_Val == 'Val'])]
+
+    # split for oversampling
+    X_smote_train = subset_train.drop('readmitted', axis = 1)
+    y_smote_train = subset_train['readmitted']
+
+    # get categorical columns locs
+    categorical_features_indices = [X_smote_train.columns.get_loc(col) for col in X_smote_train.select_dtypes(include=['category', 'object']).columns]
+    smote_os = Class_ML_Project.SMOTENC_NS(categorical_features= categorical_features_indices,k_neighbors= 5, seed=42)
+
+    # label encode for SMOTE
+    label_encoder = LabelEncoder()
+    y_encoded_smote_train = label_encoder.fit_transform(y_smote_train)
+    subset_test.loc[:,'readmitted'] = label_encoder.fit_transform(subset_test.loc[:,'readmitted'])
+    
+    # change dype of target to int64
+    subset_test['readmitted'] = subset_test['readmitted'].astype('int64')
+    
+    # oversample and combine
+    X_resampled_smote, y_resampled_smote = smote_os.fit_resample(X_smote_train,y_encoded_smote_train)
+    training_post_smote = pd.concat([X_resampled_smote, pd.Series(y_resampled_smote)],axis =1)
+    training_post_smote.columns.values[-1] = 'readmitted'
+    
+    
+    # run the post_pipeline to complete preprocssing before training
+    training_post_smote = post_pipeline.fit_transform(training_post_smote)
+    training_post_smote = remove_sparse_OHE(training_post_smote,OHE_regular_cols)
+    
+    subset_test = post_pipeline.fit_transform(subset_test)
+    subset_test = remove_sparse_OHE(subset_test,OHE_regular_cols)
+    
+    # drop extra cols that are not in train test but are in test set
+    test_drop_cols = subset_test.columns[~subset_test.columns.isin(training_post_smote.columns)]
+    subset_test.drop(test_drop_cols, axis = 1,inplace = True)
+    
+    # add columns that were not exisiting in GAN data only with 0 values
+    missing_columns_smote_df = pd.DataFrame(0,index = np.arange(subset_test.shape[0]), columns = training_post_smote.columns[~training_post_smote.columns.isin(subset_test.columns)])
+    subset_test = pd.concat([subset_test.reset_index(drop = True),missing_columns_smote_df],axis = 1)
+    
+    # order columns the same as in training
+    subset_test = subset_test[training_post_smote.columns]
+    return training_post_smote,subset_test

@@ -24,12 +24,12 @@ from xgboost import XGBClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier
 from sklearn import svm
 from catboost import CatBoostClassifier
+import re
+import string
+import pickle
+import copy
+import glob
 
-# import string
-# import pickle
-# import copy
-# import glob
-# import re
 # from imblearn.over_sampling import SMOTENC
 # Our classes and functions
 import Functions_ML_Project
@@ -135,32 +135,6 @@ print(defualt_models_original_dataframe)
 
 
 # --------------------------------------------------------------- #
-# run pipeline and defualt models on oversampled data by SMOTE-NC #
-# --------------------------------------------------------------- #
-
-post_smote_traning_dataset = pd.read_csv('post_smote_traning_dataset.csv',index_col= 0)
-
-pipeline_smote = Pipeline([('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='other', columns = ['race'])),
-                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
-                     ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
-                     ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
-                       change_col='change', diag_cols=diagnoses_cols))])
-
-training_clean_smote_imputed = pipeline_smote.fit_transform(post_smote_traning_dataset)
-
-# run default models and compare with cross validation  
-X_smote = training_clean_smote_imputed.drop('readmitted',axis  = 1 )
-
-y_smote = training_clean_smote_imputed['readmitted']
-y_smote = LabelEncoder().fit_transform(y_smote)
-
-multi_model_cv.fit(X_smote, y_smote)
-defualt_models_smote_dataframe = multi_model_cv.get_results()
-print(defualt_models_smote_dataframe)
-
-#defualt_models_smote_dataframe.to_csv('default_models_smote_dataframe.csv', index=False)
-
-# --------------------------------------------------------------- #
 #   run pipeline and defualt models on oversampled data by GANs   #
 # --------------------------------------------------------------- #
 
@@ -173,7 +147,7 @@ IRRELEVANT_FEATURES_for_GAN = ['repaglinide','nateglinide','chlorpropamide','tol
  'tolazamide','glyburide-metformin','glipizide-metformin','glimepiride-pioglitazone','metformin-pioglitazone',
  'admission_source_descriptor']
 
-pipeline_CTGAN = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES_for_GAN)),
+pipeline_GAN = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES_for_GAN)),
                      ('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='Other', columns = ['race'])),
                      ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
                      ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
@@ -186,13 +160,43 @@ id_fold = pd.read_csv('id_fold.csv')
 GAN_synthesized_data = [f for f in os.listdir() if 'CTGAN' in f and os.path.isfile(os.path.join(f))]
 
 results_GAN_df = pd.DataFrame()
-for fold,syn_data in enumerate(GAN_synthesized_data):
+for syn_data in GAN_synthesized_data:
+    fold = int(re.findall(r'\d+',syn_data)[0])
     GAN_train_fold, GAN_test_fold = Functions_ML_Project.GAN_data_preprocessing(syn_data,
                                                                                  training_clean_imputed, IRRELEVANT_FEATURES_for_GAN,
-                                                                                 id_fold,OHE_regular_cols,fold+1,'max',pipeline_CTGAN)
+                                                                                 id_fold,OHE_regular_cols,fold,'max',pipeline_GAN)
     
     model_results = Functions_ML_Project.run_models_with_GAN(GAN_train_fold, GAN_test_fold, models = models_defualt)
     temp_df = pd.DataFrame([model_results])
     results_GAN_df = pd.concat([results_GAN_df, temp_df], ignore_index=True)
-    
-#results_GAN_df.to_csv('default_models_CTGAN_dataframe.csv', index=False)
+results_GAN_df.loc['mean'] = results_GAN_df.mean()
+#results_GAN_df.to_csv('default_models_CT_GAN_dataframe.csv', index=True)
+
+# --------------------------------------------------------------- #
+# run pipeline and defualt models on oversampled data by SMOTE-NC #
+# --------------------------------------------------------------- #
+
+training_df_for_smote = training_df_new[training_df_new.readmitted.isin(['<30', 'NO'])]
+
+pre_pipeline_smote = Pipeline([('feature_remover', Class_ML_Project.FeatureRemover(features_to_remove = IRRELEVANT_FEATURES)),
+                     ('numerical_scaler',Class_ML_Project.NumericalTransformer(columns=NUMERICAL))])
+
+post_pipeline_smote = Pipeline([('imputer_race', Class_ML_Project.DataFrameImputer(strategy='constant', fill_value='Other', columns = ['race'])),
+                     ('imputer_medical', Class_ML_Project.DataFrameImputer(strategy='most_frequent',columns = ['medical_specialty'])),
+                     ('age_encoder', Class_ML_Project.MultiColumnLabelEncoder(columns=['age'])),
+                     ('OHE', Class_ML_Project.CustomOHEncoder(OHE_regular_cols= OHE_regular_cols, OHE_4_to_2_cols=OHE_4_to_2_cols,
+                       change_col='change', diag_cols=diagnoses_cols))])
+
+results_SOMTE_df = pd.DataFrame()
+for fold in id_df.fold_num.unique():
+    training_post_smote,subset_test = Functions_ML_Project.SMOTE_data_preprocessing(training_df_for_smote,IRRELEVANT_FEATURES,
+                                                               id_df,OHE_regular_cols,fold,
+                                                               pre_pipeline_smote,post_pipeline_smote)
+
+    model_results = Functions_ML_Project.run_models_with_GAN(training_post_smote, subset_test, models = models_defualt)
+    temp_df = pd.DataFrame([model_results])
+    results_SOMTE_df = pd.concat([results_SOMTE_df, temp_df], ignore_index=True)
+
+    results_SOMTE_df.loc['mean'] = results_SOMTE_df.mean()
+#results_SOMTE_df.to_csv('default_models_smote_dataframe.csv', index=True)
+print(results_SOMTE_df)
