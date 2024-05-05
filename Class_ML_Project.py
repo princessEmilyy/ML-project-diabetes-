@@ -17,7 +17,6 @@ from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , trai
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, make_scorer
 from sklearn.impute import KNNImputer
 from sklearn.multiclass import OneVsRestClassifier
-from Functions_ML_Project import custom_avg_precision_score
 import random
 import string
 import pickle
