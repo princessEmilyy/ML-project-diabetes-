@@ -15,7 +15,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, L
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_graphviz
 from sklearn.model_selection import cross_val_score ,StratifiedGroupKFold , train_test_split
-from sklearn.metrics import balanced_accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, average_precision_score, make_scorer
+from sklearn.metrics import balanced_accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, average_precision_score, make_scorer, log_loss
 from sklearn.impute import KNNImputer
 import random
 import string
@@ -23,7 +23,9 @@ import pickle
 import copy
 import glob
 import re
+
 from imblearn.over_sampling import SMOTENC
+from imblearn.ensemble import BalancedRandomForestClassifier
 
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 from sklearn.preprocessing import label_binarize
@@ -31,6 +33,11 @@ from sklearn.multiclass import OneVsRestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
+
+import optuna 
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+from optuna.samplers import RandomSampler
+import xgboost as xgb
 
 
 import Class_ML_Project
@@ -58,6 +65,8 @@ def read_and_clean_data_(file_name: str):
     whole_data_df[whole_data_df == "Unknown/Invalid"] = np.nan
 
     return whole_data_df
+
+
 
 
 def clean_data_and_return_train_and_test(file_name: str):
@@ -122,7 +131,7 @@ def clean_data_and_return_train_and_test(file_name: str):
     Y = diabetic_only_df['readmitted']
 
     # instantiate the StratifiedGroupKFold class
-    sgkf = StratifiedGroupKFold(n_splits=5)
+    sgkf = StratifiedGroupKFold(n_splits=5,)
 
     # use the CV split to create 5 spilt of a 80-20 ratio
     cv_division = sgkf.split(X, Y, groups_for_stratification)
@@ -142,6 +151,8 @@ def clean_data_and_return_train_and_test(file_name: str):
           '\n\n')
 
     return train_df, test_df
+
+
 
 
 def preform_ids_maping(file_name: str):
@@ -205,6 +216,8 @@ def preform_ids_maping(file_name: str):
     return name_id, mapping_dictionary
 
 
+
+
 def apply_mapping(in_db: pd.DataFrame, name_id: list, mapping: dict):
     """
     replace the disease code by disease name
@@ -234,6 +247,8 @@ def apply_mapping(in_db: pd.DataFrame, name_id: list, mapping: dict):
     print(df_new.iloc[:, -3:])
     df_new.index = index_save
     return df_new
+
+
 
 
 def feature_engineering(in_df: pd.DataFrame):
@@ -320,17 +335,22 @@ def categorize_dia(code:pd.Series):
     return 'Other'
 
 
+
+
 # Define a custom scoring function
 def custom_avg_precision_score(y_true, y_prob):
     # Assuming y_prob is a 2D array of shape [n_samples, n_classes]
     return average_precision_score(y_true, y_prob, average='macro')
 
 
+
 # Define a function to extract the lower and upper bounds of the age range and calculate the average
 def extract_age_range_and_average(age_range):
     lower, upper = map(int, age_range.strip('[]()').split('-'))
     return (lower + upper) / 2
-    
+
+
+
 # define a function that removes OHE sparse data
 def remove_sparse_OHE(df_:pd.DataFrame, regex_colnames:list):
     sparse_OHE_cols = []
@@ -340,6 +360,8 @@ def remove_sparse_OHE(df_:pd.DataFrame, regex_colnames:list):
     print('removed %i sparse OHE columns' % len(sparse_OHE_cols))
     df_.drop(sparse_OHE_cols, axis =1, inplace = True)
     return df_
+
+
 
 # function to process GAN synthezied data and combine to real data 
 def GAN_data_preprocessing(GAN_path:str, original_data:pd.DataFrame,filtration_col:list,
@@ -384,12 +406,16 @@ def GAN_data_preprocessing(GAN_path:str, original_data:pd.DataFrame,filtration_c
         n_OE = subset_train.readmitted.value_counts()[1] - subset_train.readmitted.value_counts()[0]
     elif isinstance(oversample, float):
         n_OE = round((subset_train.readmitted.value_counts()[1] - subset_train.readmitted.value_counts()[0]) * oversample)
+    elif oversample == 0:
+        n_OE = 0
 
     # oversample with GAN
     sampled_df = current_synthesized_df_imputed.sample(n=n_OE, random_state=42)
     subset_train = pd.concat([subset_train, sampled_df],axis = 0)
     
     return subset_train,subset_test
+
+
 
 # run models on all folds of GAN
 def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
@@ -419,6 +445,8 @@ def run_models_with_GAN(train_df:pd.DataFrame,test_df:pd.DataFrame,
         print('\n Score.................................. = %.3f\n' % tmp_score)
         results[name] = tmp_score
     return results
+
+
 
 
 # funcitons that runs a preprocess SMOTE oversampling based on Folds give by a dataframe
@@ -487,3 +515,391 @@ def SMOTE_data_preprocessing(original_data:pd.DataFrame,filtration_col:list,
     # order columns the same as in training
     subset_test = subset_test[training_post_smote.columns]
     return training_post_smote,subset_test
+
+
+
+
+# functions for hyperparameter tuning XGBoost
+# only tune scale_pos to check of partial oversampling is better
+def objective_tune_scale_pos_XGB(trial, dtrain, params_train, eval_metric, nfold, folds_idx): 
+    
+    params_search = {
+                      "scale_pos_weight":trial.suggest_float("scale_pos_weight", 0.0, 1.0)
+                    }
+    
+    params_train.update(params_search)
+    
+    #num_boost_round = params_train.pop('num_estimators')
+
+    num_boost_round = 500
+    
+    cls_cv = xgb.cv(params=params_train, num_boost_round = num_boost_round, dtrain=dtrain,
+                    nfold=nfold, shuffle=True,  metrics=eval_metric,
+                    stratified=True,  seed=42, folds = folds_idx) 
+    
+    return (cls_cv.iloc[-1, 2])
+
+
+
+
+# objective to tune other hyperparameters in steps - step 1 features are more important       
+
+    { "num_estimators" :trial.suggest_int("num_estimators", 780, 820), 
+                       "max_depth" : trial.suggest_int('max_depth', 3, 4),
+                       "learning_rate" :trial.suggest_float("learning_rate", 0.15, 0.17), 
+                       "subsample" :trial.suggest_float("subsample", 0.8, 0.85),
+                       "gamma" :trial.suggest_float("gamma", 2, 3),
+                       "min_child_weight":  trial.suggest_int('min_child_weight', 1, 2)
+                    }
+
+    
+    params_train.update(params_search)
+    
+    num_boost_round = params_train.pop('num_estimators')
+    
+    cls_cv = xgb.cv(params=params_train, num_boost_round = num_boost_round, dtrain=dtrain,
+                    nfold=nfold, shuffle=True, metrics=eval_metric,
+                    stratified=True,  seed=42, folds = folds_idx) 
+   
+    return (cls_cv.iloc[-1, 2]) 
+
+
+
+
+def objective_tune_stage_2(trial, dtrain, params_train, num_boost_round, eval_metric, nfold, folds_idx): 
+
+    params_search = {   
+                       "min_child_weight": trial.suggest_int("min_child_weight", 5, 15), 
+                       "lambda": trial.suggest_float("lambda", 3.0, 6.0),
+                       "alpha": trial.suggest_float("alpha", 2.5, 4.0),
+                       "colsample_bytree": trial.suggest_float("colsample_bytree", 0.8, 0.9),
+                       "colsample_bynode" : trial.suggest_float("colsample_bynode", 0.95, 1.0),
+                       "max_delta_step": trial.suggest_int("max_delta_step", 2, 7),
+                       "grow_policy": trial.suggest_categorical("grow_policy", ["depthwise"]),
+                       "sampling_method": trial.suggest_categorical("sampling_method", ["uniform"]),
+                       "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.65, 0.75),
+                       "max_leaves": trial.suggest_int("max_leaves", 90, 110)
+                    }
+    
+    
+    params_train.update(params_search)
+    
+   
+    cls_cv = xgb.cv(params=params_train, num_boost_round = num_boost_round, dtrain=dtrain,
+                    nfold=nfold, shuffle=True,  metrics=eval_metric,  stratified=True,  seed=42, folds = folds_idx) 
+    
+    return (cls_cv.iloc[-1, 2])  
+
+
+def print_best_callback(study, trial):
+            print(f"Best value: {study.best_value}, Best params: {study.best_trial.params}")
+
+
+
+
+# function that tunes hyperparameters      
+def tune_hyperparameters_XGB(base_param,OE_data, fold_index,objective,
+                             tune_steps = 'one' ,eval_metric = 'logloss',
+                         device = 'gpu',  nfolds = 5, n_trials = 50, skip_steps= False):    
+    device = device
+
+    if device == 'gpu':
+        tree_method = 'hist'
+        cuda = True
+    else:
+        tree_method = 'auto'
+        cuda = False 
+
+    # set basic parameters 
+    params = base_param
+
+    # number of folds
+    nfolds = nfolds
+
+    # tuning trails for optuna
+    n_trials = n_trials
+
+    # set evaluation metric
+    eval_metric = eval_metric
+
+    if eval_metric == 'balanced_accuracy_score':
+                 min_max_opt = 'maximize'
+    elif  eval_metric == 'logloss' or eval_metric == 'error':
+        min_max_opt = 'minimize'
+
+    dtrain = xgb.DMatrix(OE_data.drop('readmitted', axis=1),
+                         OE_data['readmitted'],enable_categorical=True)
+    
+        
+    base_model = xgb.cv(params=base_param, dtrain=dtrain,
+                    nfold=nfolds, shuffle=True,  metrics=eval_metric,
+                    stratified=True,  seed=42, folds = fold_index)
+    
+    baseline_score = base_model[f"test-{eval_metric}-mean"].iloc[-1]
+    
+    balanced = OE_data.loc[fold_index[0][0]].readmitted.sum() == len(OE_data.loc[fold_index[0][0]])/2
+    
+    if balanced:
+        return np.NAN, base_param ,baseline_score
+    
+    if tune_steps == 'one':
+        study = optuna.create_study(direction=min_max_opt, sampler=RandomSampler(seed=0))
+        func = lambda trial: objective(trial, dtrain, params, eval_metric, nfolds, fold_index)
+        study.optimize(func, n_trials= n_trials,  show_progress_bar=True, callbacks=[print_best_callback]) 
+        best_params = study.best_params
+        params.update(best_params)
+    else:
+    # tune parameters in few stages 
+        if not skip_steps:
+            # 1st round of params 
+            study = optuna.create_study(direction=min_max_opt, sampler=RandomSampler(seed=0))
+            func = lambda trial: objective_tune_stage_1(trial, dtrain, params, eval_metric, nfolds, fold_index)
+            study.optimize(func, n_trials= n_trials,  show_progress_bar=True, callbacks=[print_best_callback]) 
+            best_params = study.best_params
+            params.update(best_params)
+
+            # 2nd round of params
+            num_estimators = params.pop('num_estimators')
+            study = optuna.create_study(direction=min_max_opt, sampler=RandomSampler(seed=0))
+            func = lambda trial: objective_tune_stage_2(trial, dtrain, params, num_estimators, eval_metric, nfolds, fold_index)
+            study.optimize(func, n_trials= n_trials,  show_progress_bar=True, callbacks=[print_best_callback]) 
+            best_params = study.best_params
+            params.update(best_params)
+            params['num_estimators'] = num_estimators
+        else:
+            num_estimators = params.pop('num_estimators')
+            study = optuna.create_study(direction=min_max_opt, sampler=RandomSampler(seed=0))
+            func = lambda trial: objective_tune_stage_2(trial, dtrain, params, num_estimators, eval_metric, nfolds, fold_index)
+            study.optimize(func, n_trials= n_trials,  show_progress_bar=True, callbacks=[print_best_callback]) 
+            best_params = study.best_params
+            params.update(best_params)
+            params['num_estimators'] = num_estimators
+
+    #print('num_estimators', num_boost_round)
+    print('params', params)
+    print('Best value', study.best_value)
+    
+    return study.best_value,params, baseline_score
+
+
+
+
+
+# define objective for optuna optimization for Random forest
+def objective_rf(trial, _df, folds,eval_metric,initial_params ={}):
+    # Suggest parameters
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 1, 1000),
+        "max_depth": trial.suggest_int("max_depth", 1, 35),
+        "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 20),
+        "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 20, 1000),
+    }
+    
+    # List to store the scores for each fold
+    scores = []
+    
+    # Iterate over each fold
+    for train_idx, test_idx in folds:
+        
+        train_df = _df.loc[train_idx]
+        test_df = _df.loc[test_idx]
+        
+        X_train, X_test = train_df.drop('readmitted', axis = 1), test_df.drop('readmitted',axis = 1)
+        y_train, y_test = train_df['readmitted'], test_df['readmitted']
+        
+        # Initialize the RandomForestClassifier with suggested parameters
+        clf = RandomForestClassifier(**params, random_state=42, n_jobs=-1)
+        
+        # Fit the model
+        clf.fit(X_train, y_train)
+        
+        
+        # Calculate the accuracy (or any other metric)
+        if eval_metric == "logloss":
+            # Predict on the test set
+            y_pred = clf.predict_proba(X_test)[:,1]
+            score = log_loss(y_test, y_pred)
+        elif eval_metric == "balanced_accuracy_score":
+            y_pred = clf.predict(X_test)
+            score = balanced_accuracy_score(y_test, y_pred)
+        
+        scores.append(score)
+
+    # Calculate the average score across all folds
+    average_score = np.mean(scores)
+    return average_score
+
+
+
+
+# hyperparamer tuning for RandomForest
+def tune_hyperparameters_rf(_df, eval_metric,folds,n_trials=50):
+    
+    # tuning trails for optuna
+    n_trials = n_trials
+
+    # set evaluation metric
+    eval_metric = eval_metric
+
+    if eval_metric == 'balanced_accuracy_score':
+                 min_max_opt = 'maximize'
+    elif  eval_metric == 'logloss' or eval_metric == 'error':
+        min_max_opt = 'minimize'
+    
+    # ---------- #
+    # base model #
+    # ---------- #
+    
+    base_params = {'max_depth':10,
+                   "n_estimators":100,
+                   "min_samples_split":5,
+                   "min_samples_leaf":3,
+                   "random_state":42,
+                  "max_features": 'sqrt',
+                  "criterion":'log_loss',
+                  }
+    
+    # set basic parameters 
+    params = base_params
+    
+    scores_base =[]
+    for train_idx, test_idx in folds:
+        
+        train_df = _df.loc[train_idx]
+        test_df = _df.loc[test_idx]
+        
+        X_train, X_test = train_df.drop('readmitted', axis = 1), test_df.drop('readmitted',axis = 1)
+        y_train, y_test = train_df['readmitted'], test_df['readmitted']
+        
+        # Initialize the RandomForestClassifier with suggested parameters
+        clf = RandomForestClassifier(**base_params,n_jobs = -1)
+        
+        # Fit the model
+        clf.fit(X_train, y_train)
+        
+        # Predict on the test set
+        y_pred = clf.predict(X_test)
+        
+        # Calculate the accuracy (or any other metric)
+        if eval_metric == "logloss":
+            # Predict on the test set
+            y_pred = clf.predict_proba(X_test)[:,1]
+            score = log_loss(y_test, y_pred)
+        elif eval_metric == "balanced_accuracy_score":
+            y_pred = clf.predict(X_test)
+            score = balanced_accuracy_score(y_test, y_pred)
+        
+        scores_base.append(score)
+
+    # Calculate the average score across all folds
+    baseline_score = np.mean(scores_base)
+    print(baseline_score)
+    
+    study = optuna.create_study(direction=min_max_opt, sampler=optuna.samplers.RandomSampler(seed=0))
+    func = lambda trial: objective_rf(trial,_df,folds,eval_metric)
+    study.optimize(func, n_trials=n_trials,
+                   show_progress_bar=True,
+                   callbacks=[print_best_callback])
+    
+    best_params = study.best_params
+    base_params.update(best_params)
+
+    print('params', params)
+    print('Best value', study.best_value)
+    
+    return base_params, study.best_value,baseline_score
+
+
+{'n_estimators': 611, 'max_depth': 10,
+                    'min_samples_split': 10,
+                    'min_samples_leaf': 2, 'max_leaf_nodes': 977}
+
+
+#     params = {
+#         "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+#         "max_depth": trial.suggest_int("max_depth", 2, 35),
+#         "min_samples_split": trial.suggest_int("min_samples_split", 2, 15),
+#         "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 15),
+#         "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 20, 1000),
+#         #"sampling_strategy": trial.suggest_float("sampling_strategy", 0.21, 1.0)
+#     }
+
+# objective for balanced random forest
+def objective_brf(trial, X, y, n_splits,eval_metric, groupstrat):
+    # Suggest parameters
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 600, 700),
+        "max_depth": trial.suggest_int("max_depth", 8, 12),
+        "min_samples_split": trial.suggest_int("min_samples_split", 8, 12),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 4),
+        "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 950, 1200),
+        #"sampling_strategy": trial.suggest_float("sampling_strategy", 0.21, 1.0)
+    }
+    
+    clf = BalancedRandomForestClassifier(**params,replacement = True,
+                                         bootstrap = True,
+                                         random_state=42, n_jobs=-1,
+                                        sampling_strategy = 'auto')
+    
+    # Stratified K-Fold cross-validator
+    kf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42,)
+    
+    # Calculate accuracy using cross-validation
+    scores = cross_val_score(clf, X, y,groups = groupstrat ,cv=kf, scoring=eval_metric)
+    
+    # Return the negative mean accuracy
+    return np.mean(scores)
+
+
+
+
+# function for hyperparameter tuning for balanced random forest
+def tune_hyperparameters_brf( X, y,n_splits, eval_metric,groupstrat,n_trials=50):
+    
+    # tuning trails for optuna
+    n_trials = n_trials
+
+    # set evaluation metric
+    eval_metric = eval_metric
+    
+    # ---------- #
+    # base model #
+    # ---------- #
+    
+    base_param = {'replacement' : True,'bootstrap' : True,
+                  'random_state' : 42,'sampling_strategy': 'auto'}
+        
+    # Initialize the RandomForestClassifier with suggested parameters
+    clf = BalancedRandomForestClassifier(replacement = True,
+                                       bootstrap = True,
+                                       random_state=42,
+                                         sampling_strategy = 'auto',
+                                         n_jobs = -1)
+
+
+
+    kf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42,)
+
+    # Calculate accuracy using cross-validation
+    base_scores = cross_val_score(clf, X, y,groups = groupstrat ,cv=kf, scoring=eval_metric,n_jobs=-1)
+
+    # Calculate the average score across all folds
+    mean_base_scores = np.mean(base_scores)
+    print(mean_base_scores)
+    
+    study = optuna.create_study(direction='maximize', sampler=optuna.samplers.RandomSampler(seed=0))
+    func = lambda trial: objective_brf(trial,X,y,n_splits,eval_metric,groupstrat)
+    study.optimize(func, n_trials=n_trials,
+                   show_progress_bar=True,
+                   callbacks=[print_best_callback])
+    
+    best_params = study.best_params
+
+    print('params', base_param)
+    print('Best value', study.best_value)
+    if eval_metric == 'neg_log_loss':
+         return params, -study.best_value,-mean_base_scores
+    elif eval_metric == 'balanced_accuracy':
+         return best_params, study.best_value,mean_base_scores
+   
