@@ -745,7 +745,189 @@ plt.ylabel('mean decrease in impurity across 15 pseudoseeds')  # Remove y-axis l
 
 plt.show()
 
+#########################################
+#        Predicting with LightGBM        # 
+#########################################
 
+### Hyperparameter tuning with Optuna ###
+
+# Comment out this junk of code when finished tuning and use lgb_params_best instead of lgb_params
+
+# def objective(trial):
+#     lgb_params = {# "device_type": trial.suggest_categorical("device_type", ['gpu']),
+#                     "num_estimators": trial.suggest_categorical("num_estimators", [1000,10000]), #10000
+#                     "learning_rate": trial.suggest_float("learning_rate", 0.3, 0.4,step = 0.01),
+#                     "num_leaves": trial.suggest_int("num_leaves", 200, 270, step=5), #default 31 1000
+#                     #"max_depth": trial.suggest_int("max_depth", 3, 12), #defalt -1
+#                     "min_data_in_leaf":200,
+#                     #"min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 200, 400, step=50),
+#                     "lambda_l1": trial.suggest_int("lambda_l1", 0, 100, step=10),
+#                     "lambda_l2": trial.suggest_int("lambda_l2", 0, 100, step=10),
+#                     "min_gain_to_split": trial.suggest_float("min_gain_to_split", 0.2, 0.3,step=0.001),
+#                     "bagging_fraction": trial.suggest_float("bagging_fraction", 0.2, 0.9, step=0.1),
+#                     "bagging_freq": trial.suggest_categorical("bagging_freq", [1]),
+#                     "feature_fraction": trial.suggest_float("feature_fraction", 0.75, 0.9, step=0.01),
+#                     "random_state": 42
+#                      }
+
+    # model = lgb.LGBMClassifier(**lgb_params)
+
+    # score_list = list()
+
+    # for fold in range(1,6):
+    #     File = open(f'training_validation_clean_imputed_{fold}.pkl', 'rb')
+    #     training_clean_imputed, val_clean_imputed = pickle.load(File)
+
+    #     # Fit and transform the DataFrame
+    #     # training_clean_imputed = pipeline.fit_transform(train)
+    #     X_train = training_clean_imputed.drop('readmitted', axis=1)
+    #     y_train = training_clean_imputed['readmitted']
+    #     y_train = LabelEncoder().fit_transform(y_train)
+    #     # val = pd.read_csv(f'validation_fold_{fold}.csv')
+    #     # val = val[list(set(val.columns).intersection(set(train.columns)))]
+    #     # val_clean_imputed = pipeline.fit_transform(val)
+    #     X_val = val_clean_imputed.drop('readmitted', axis=1)
+    #     y_val = val_clean_imputed['readmitted']
+    #     y_val = LabelEncoder().fit_transform(y_val)
+    #     cl_list = list(set(X_val.columns).intersection(set(X_train.columns))) #QC
+    #     X_train = X_train[cl_list] #same order
+    #     X_val = X_val[cl_list]
+    #     model.fit(X_train, y_train, eval_set=(X_val, y_val))
+    #     y_pred = model.predict(X_val)
+    #     score_list.append(balanced_accuracy_score(y_val, y_pred))
+    #     #File = open(f'training_validation_clean_imputed_{fold}.pkl', 'wb')
+    #     #pickle.dump((training_clean_imputed, val_clean_imputed), File)
+    # return sum(score_list) / len(score_list),  #Mean balanced accuracy
+
+## Optuna study (commented out when finished tuning)
+# study = optuna.create_study(direction="maximize")
+# study.optimize(objective, n_trials=1000, timeout=400)
+# print('Best hyperparameters:', study.best_params)
+# print('Best balance accuracy:', study.best_value)
+
+## Save optuna output for GPU purposes to see reaults
+# f = open("LGBM_hyperparameters_.txt","a") #"w" check for append
+# f.write(f'Best params:{study.best_params}/n/n'
+#         f'Mean CV score (balanced_accuracy)::{study.best_value}/n/n')
+# f.close
+### Visualizing Optuna results ###
+#Plot optimization history of all trials in a study
+# fig_optuna = optuna.visualization.plot_optimization_history(study)
+# fig_optuna.show()
+
+# fig_importance = optuna.visualization.plot_param_importances(
+#     study, target=lambda t: t.duration.total_seconds(), target_name="duration")
+# fig_importance.show()
+
+### Test cohort ###
+testing_df_new = pd.read_csv("test_cohort.csv")
+all_resampled_data = pd.read_csv("all_resampled_data.csv")
+
+# Preprocessing Pipline on test set
+id_names, mapping_dict = Functions_ML_Project.preform_ids_maping('IDS_mapping.csv')
+
+testing_df_new = Functions_ML_Project.apply_mapping(testing_df_new, id_names, mapping_dict)
+testing_df_new = Functions_ML_Project.feature_engineering(testing_df_new)
+testing_clean_imputed = pipeline.fit_transform(testing_df_new)
+testing_clean_imputed = testing_clean_imputed[testing_clean_imputed.readmitted.isin(['<30', 'NO'])]
+testing_clean_imputed = testing_clean_imputed.iloc[:,testing_clean_imputed.columns.isin(all_resampled_data.columns)]
+missing_columns_test_df = pd.DataFrame(0,index = np.arange(testing_clean_imputed.shape[0]),
+                                       columns = all_resampled_data.columns[~all_resampled_data.columns.isin(testing_clean_imputed.columns)])
+testing_clean_imputed = pd.concat([testing_clean_imputed.reset_index(drop = True),missing_columns_test_df],axis = 1)
+
+X_test = testing_clean_imputed.drop('readmitted',axis  = 1)
+y_test = testing_clean_imputed['readmitted']
+y_test = LabelEncoder().fit_transform(y_test)
+
+# Order columns the same as in training
+X_train = all_resampled_data.drop('readmitted', axis=1)
+X_test = X_test[X_train.columns] 
+y_train = all_resampled_data['readmitted']
+y_train = LabelEncoder().fit_transform(y_train)
+
+# Best params based on Optuna objective
+lgb_params_best = {"num_estimators": 1000, #10000
+                    "learning_rate": 0.31,
+                    "num_leaves": 230,
+                    #"max_depth": trial.suggest_int("max_depth", 3, 12), #defalt -1
+                    # "min_data_in_leaf":200,
+                    "lambda_l1": 10,
+                    "lambda_l2": 80,
+                    "min_gain_to_split":0.2380984754136244,
+                    "bagging_fraction": 0.7,
+                    "bagging_freq": 1,
+                    "feature_fraction": 0.7999999999999999,
+                    "random_state": 42
+                     }
+#According to Ortal
+base_params = {"objective":"binary",'max_depth':5,
+              'subsample':0.8, 'colsample_bytree':0.8,
+              "seed":42}
+
+final_lgb = lgb.LGBMClassifier()
+final_lgb.set_params(**lgb_params_best)
+
+base_lgb = lgb.LGBMClassifier(random_state = 42)
+base_lgb.set_params(**base_params)
+
+final_lgb.fit(X_train,y_train)
+base_lgb.fit(X_train,y_train)
+
+# Calcualte the balanced accuracy LGBM
+tuned_acc_score = balanced_accuracy_score(y_test,final_lgb.predict(X_test))
+base_acc_score = balanced_accuracy_score(y_test,base_lgb.predict(X_test))
+print('Balanced accuracy for tuned model: ',round(tuned_acc_score,3))
+print('Balanced accuracy for base model: ',round(base_acc_score,3))
+print('An improvment of ',round(round(tuned_acc_score,3)-round(base_acc_score,3),3))
+
+# plot ROC-AUC curves    #
+#________________________#
+# AUC curves
+base_pred_prob = base_lgb.predict_proba(X_test)[:, 1]
+tuned_pred_prob = final_lgb.predict_proba(X_test)[:, 1]
+# Compute ROC curve and AUC
+fpr, tpr, _ = roc_curve(y_test, base_pred_prob)
+roc_auc_baseline = auc(fpr, tpr)
+
+fpr_t, tpr_t, _ = roc_curve(y_test, tuned_pred_prob)
+roc_auc_tuned = auc(fpr_t, tpr_t)
+
+# Plot the ROC curve
+plt.figure()
+plt.plot(fpr, tpr, color='darkorange', lw=2, label='Untuned ROC curve (area = %0.2f)' % roc_auc_baseline)
+plt.plot(fpr_t, tpr_t, color='darkgreen', lw=2, label='Tuned ROC curve (area = %0.2f)' % roc_auc_tuned)
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('1 - Speseficity')
+plt.ylabel('Sensitivity')
+plt.title('LGBM - GAN Balanced completely\nReceiver Operating Characteristic')
+plt.legend(loc="lower right")
+plt.savefig('roc_curve_GAN_fully_balanced.png',format='png', dpi=300,
+           transparent=True)
+#plt.show()
+plt.close()
+
+### Barplot balanced accuracy ###
+# Labels for the conditions
+conditions = ['Untuned', 'Tuned']
+
+# Values for the conditions
+values = [base_acc_score, tuned_acc_score]
+
+plt.rcParams.update({'font.size': 14})
+
+# Plotting the bar plot using Seaborn
+sns.barplot(x=conditions, y=values, palette=['darkorange', 'darkgreen'])
+
+# Adding labels and title
+plt.ylim(0.3, 0.7)
+plt.xlabel('Condition')
+plt.ylabel('Balanced Accuracy')
+plt.title('LGBM - Tuned vs. Untuned')
+plt.tight_layout()
+# Display the plot
+#plt.show()
 
 
 
