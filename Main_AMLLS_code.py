@@ -42,10 +42,6 @@ import seaborn as sns
 import Functions_ML_Project
 import Class_ML_Project
 
-%load_ext autoreload
-%autoreload 2
-%aimport
-
 # Global variables
 # Define categorical feature list
 # Subset all categorical (removing the non informative medication)
